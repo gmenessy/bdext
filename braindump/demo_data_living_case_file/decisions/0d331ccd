@@ -1,0 +1,8 @@
+{
+  "task_id": "CASE-FR-2026-001",
+  "decision": "Nachforderung Statik",
+  "reasoning": "Widerspr\u00fcchliche Angaben zur Statik. Da das Sicherheitsrisiko hoch ist (Vorsichtsprinzip), wird eine Nachforderung gestellt.",
+  "chosen_action": "REQUEST_INFO",
+  "outcome_score": 1.0,
+  "timestamp": "2026-04-11T11:02:49.538789"
+}
