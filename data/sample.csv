@@ -1,0 +1,7 @@
+system_prompt,prompt,input,expected_output,group_id,case_id
+"Du bist ein hilfreicher Assistent.","Beantworte die Frage: {input}","Was ist die Hauptstadt von Deutschland?","Die Hauptstadt von Deutschland ist Berlin.","gruppe_1","fall_1"
+"Du bist ein hilfreicher Assistent.","Beantworte die Frage: {input}","Wie hoch ist der Mount Everest?","Der Mount Everest ist 8.848 Meter hoch.","gruppe_1","fall_2"
+"Du bist ein hilfreicher Assistent.","Beantworte die Frage: {input}","Wer hat die Relativitätstheorie formuliert?","Albert Einstein hat die Relativitätstheorie formuliert.","gruppe_1","fall_3"
+"Du bist ein hilfreicher Assistent.","Übersetze nach Englisch: {input}","Guten Tag","Good afternoon.","gruppe_2","fall_4"
+"Du bist ein hilfreicher Assistent.","Übersetze nach Englisch: {input}","Wie geht es dir?","How are you?","gruppe_2","fall_5"
+"Du bist ein hilfreicher Assistent.","Übersetze nach Englisch: {input}","Auf Wiedersehen","Goodbye","gruppe_2","fall_6"
