@@ -101,6 +101,74 @@ def run_cmd(
     finally:
         cache.close()
 
+@app.command("tournament")
+def tournament_cmd(
+    config: str = typer.Option(..., help="Pfad zur YAML-Konfiguration"),
+    mock: bool = typer.Option(False, help="Verwende MockLLMClient für lokale Tests")
+):
+    setup_logging()
+    app_config = AppConfig.load_from_yaml(config)
+
+    loader = DatasetLoader(app_config.dataset.path)
+    bundle = loader.load()
+    train_bundle, test_bundle = split_task_bundle(bundle, app_config.dataset.train_test_split, app_config.run.random_seed)
+
+    cache = PromptCache(app_config.cache)
+
+    if mock:
+        client = MockLLMClient()
+    else:
+        client = OpenAILikeClient(app_config.api)
+
+    target_runner = TargetRunner(client, cache)
+    judge_committee = JudgeCommittee(client, app_config.judge_models, cache, app_config.optimization.disagreement_std_threshold)
+    optimizer_committee = OptimizerCommittee(client, app_config.optimizer_models)
+    acceptance_logic = AcceptanceLogic(app_config.optimization)
+
+    from prompt_optimizer.calibration import Calibrator
+    calibrator = Calibrator(app_config, target_runner, judge_committee, client)
+
+    from prompt_optimizer.tournament import TournamentOrchestrator
+    tournament_orchestrator = TournamentOrchestrator(app_config, target_runner, judge_committee)
+
+    loop = OptimizationLoop(
+        config=app_config,
+        target_runner=target_runner,
+        judge_committee=judge_committee,
+        optimizer_committee=optimizer_committee,
+        acceptance_logic=acceptance_logic,
+        calibrator=calibrator
+    )
+
+    async def async_run():
+        await loop.init()
+        all_results = []
+        final_states = {}
+        for target_model in app_config.target_models:
+            console.print(f"\n[bold blue]Starte Optimierung für Modell: {target_model.name}[/bold blue]")
+            result = await loop.run_for_model(target_model, train_bundle, test_bundle)
+            all_results.append(result)
+
+            # Reconstruct PromptState from result dict
+            from prompt_optimizer.prompt_state import PromptState
+            final_states[target_model.name] = PromptState(**result["final_state"])
+
+        console.print(f"\n[bold magenta]MÖGE DAS TURNIER BEGINNEN![/bold magenta]")
+        champion = await tournament_orchestrator.run_grand_finale(test_bundle, final_states)
+
+        console.print(f"\n[bold green]⭐⭐⭐ DER GRAND CHAMPION IST: {champion} ⭐⭐⭐[/bold green]")
+        return all_results
+
+    try:
+        all_results = asyncio.run(async_run())
+
+        reporter = Reporter(app_config)
+        reporter.write_artifacts(all_results)
+        console.print(f"\n[bold green]Tournament abgeschlossen. Reports in {app_config.run.output_dir} gespeichert.[/bold green]")
+
+    finally:
+        cache.close()
+
 @app.command("evaluate")
 def evaluate_cmd(
     config: str = typer.Option(..., help="Pfad zur YAML-Konfiguration"),

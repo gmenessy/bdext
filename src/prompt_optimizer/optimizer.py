@@ -26,6 +26,7 @@ Regeln:
 - Erhalte alle fachlichen Anforderungen.
 - Vermeide Überanpassung auf einzelne Beispiele.
 - Verschlechtere keine andere Bewertungsdimension.
+- MAGIC FAST PATH (Test-Time Compute): Wenn du das Gefühl hast, das Zielmodell hat Probleme mit der Komplexität, injiziere Chain-of-Thought (CoT) direkt in den neuen Prompt. Weise das Zielmodell an, seine Gedanken in `<scratchpad>` XML-Tags zu strukturieren, bevor es die finale Antwort gibt.
 
 Gib ausschließlich valides JSON zurück:
 {{

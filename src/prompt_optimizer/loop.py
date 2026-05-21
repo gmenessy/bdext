@@ -311,7 +311,26 @@ class OptimizationLoop:
                     self.logger.info(f"Early stopping nach Iteration {iteration} ausgelöst.")
                     break
 
-        test_results = await self._evaluate_state(state, test_bundle, target_model)
+        # Assemble Ensemble Prompts from Fallback Queue for "Mixture of Prompts" on Test Set
+        if self.config.run.mode == OptimizationMode.HARD and fallback_queue:
+            # Sort fallback by highest delta
+            fallback_queue.sort(key=lambda x: x[1], reverse=True)
+            ensemble = []
+            for fb_state, _ in fallback_queue:
+                if fb_state.system_prompt != state.system_prompt and fb_state.system_prompt not in ensemble:
+                    ensemble.append(fb_state.system_prompt)
+                if len(ensemble) >= 2: # Keep top 3 including the primary
+                    break
+            state.ensemble_system_prompts = ensemble
+            if ensemble:
+                self.logger.info(f"Ensembling aktiviert: {len(ensemble)} zusätzliche Prompts gespeichert.")
+
+        # Test evaluation logic
+        if not state.ensemble_system_prompts:
+            test_results = await self._evaluate_state(state, test_bundle, target_model)
+        else:
+            self.logger.info("Führe Mixture-of-Prompts Evaluation auf dem Test-Set durch.")
+            test_results = await self._evaluate_ensemble_state(state, test_bundle, target_model)
 
         return {
             "target_model_name": target_model.name,
@@ -320,3 +339,44 @@ class OptimizationLoop:
             "optimization_steps": [s.model_dump() for s in steps],
             "test_results": [r.model_dump() for r in test_results]
         }
+
+    async def _evaluate_ensemble_state(
+        self,
+        state: PromptState,
+        bundle: TaskBundle,
+        target_model: ModelConfig
+    ) -> List[EvalResult]:
+        """
+        Evaluate multiple system prompts and pick the best performing output per test case (Best-of-N).
+        """
+        results = []
+        prompts_to_test = [state.system_prompt] + state.ensemble_system_prompts
+
+        all_cases = []
+        for group in bundle.groups:
+            user_prompt = state.user_prompts_by_group[group.group_id]
+            for case in group.test_cases:
+                all_cases.append((user_prompt, case))
+
+        chunk_size = self.config.optimization.early_exit_chunk_size
+
+        for i in range(0, len(all_cases), chunk_size):
+            chunk = all_cases[i:i + chunk_size]
+
+            # For each case in chunk, test all prompts
+            for user_prompt, case in chunk:
+                best_result = None
+
+                # Test all prompts for this single case concurrently
+                tasks = [self._eval_case(p, user_prompt, case, target_model) for p in prompts_to_test]
+                case_results = await asyncio.gather(*tasks)
+
+                for r in case_results:
+                    if r is not None:
+                        if best_result is None or r.committee.mean_scores.overall > best_result.committee.mean_scores.overall:
+                            best_result = r
+
+                if best_result is not None:
+                    results.append(best_result)
+
+        return results
