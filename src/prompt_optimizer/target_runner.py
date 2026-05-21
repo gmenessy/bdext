@@ -7,7 +7,7 @@ class TargetRunner:
         self.client = client
         self.cache = cache
 
-    def run(
+    async def run(
         self,
         model_config: ModelConfig,
         system_prompt: str,
@@ -46,7 +46,7 @@ class TargetRunner:
             {"role": "user", "content": rendered_user_prompt}
         ]
 
-        output = self.client.complete(
+        output = await self.client.complete(
             model_config=model_config,
             messages=messages,
             temperature=temperature

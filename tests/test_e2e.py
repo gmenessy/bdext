@@ -15,7 +15,8 @@ from prompt_optimizer.loop import OptimizationLoop
 from prompt_optimizer.reporting import Reporter
 
 
-def test_e2e_optimization_loop():
+@pytest.mark.asyncio
+async def test_e2e_optimization_loop():
     config_path = "configs/example.yaml"
     app_config = AppConfig.load_from_yaml(config_path)
 
@@ -24,6 +25,7 @@ def test_e2e_optimization_loop():
     app_config.run.patience = 1
     # We want absolute mock paths just in case
     app_config.run.output_dir = "tests/test_reports"
+    app_config.run.db_path = "tests/test_reports/history.db"
     os.makedirs(app_config.run.output_dir, exist_ok=True)
 
     loader = DatasetLoader(app_config.dataset.path)
@@ -47,11 +49,13 @@ def test_e2e_optimization_loop():
         acceptance_logic=acceptance_logic
     )
 
+    await loop.init()
+
     all_results = []
     try:
         # Run just for the first model to save time
         target_model = app_config.target_models[0]
-        result = loop.run_for_model(target_model, train_bundle, test_bundle)
+        result = await loop.run_for_model(target_model, train_bundle, test_bundle)
         all_results.append(result)
 
         reporter = Reporter(app_config)
@@ -70,10 +74,12 @@ def test_e2e_optimization_loop():
         md_files = [f for f in files if f.endswith(".md")]
         json_files = [f for f in files if f.endswith(".json")]
         jsonl_files = [f for f in files if f.endswith(".jsonl")]
+        db_files = [f for f in files if f.endswith(".db")]
 
         assert len(md_files) > 0
         assert len(json_files) > 0
         assert len(jsonl_files) > 0
+        assert len(db_files) > 0
 
     finally:
         cache.close()

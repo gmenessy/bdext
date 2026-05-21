@@ -18,6 +18,8 @@ Aktueller Prompt:
 Fehlerfälle und Scores:
 {error_cases}
 
+{wiki_insights}
+
 Regeln:
 - Gib genau einen konkreten neuen Prompt zurück.
 - Der Prompt muss direkt ausführbar sein.
@@ -74,13 +76,14 @@ class OptimizerCommittee:
             )
         return "\n\n".join(formatted)
 
-    def generate_candidates(
+    async def generate_candidates(
         self,
         phase: Phase,
         current_prompt: str,
         weakest_dimension: str,
         eval_results: List[EvalResult],
-        temperature: float = 0.5
+        temperature: float = 0.5,
+        wiki_insights_str: str = ""
     ) -> List[PromptCandidate]:
 
         error_cases_str = self._format_error_cases(eval_results)
@@ -89,14 +92,15 @@ class OptimizerCommittee:
             phase=phase.value,
             weakest_dimension=weakest_dimension,
             current_prompt=current_prompt,
-            error_cases=error_cases_str
+            error_cases=error_cases_str,
+            wiki_insights=wiki_insights_str
         )
 
-        candidates = []
+        import asyncio
 
-        for model_config in self.models:
+        async def generate_for_model(model_config):
             try:
-                raw_output = self.client.complete(
+                raw_output = await self.client.complete(
                     model_config=model_config,
                     messages=[{"role": "user", "content": user_prompt}],
                     temperature=temperature
@@ -104,14 +108,16 @@ class OptimizerCommittee:
 
                 parsed = self._parse_output(raw_output)
 
-                candidates.append(PromptCandidate(
+                return PromptCandidate(
                     candidate_id=f"{model_config.name}_{phase.value}_{hash(raw_output)}",
                     phase=phase,
                     optimizer_name=model_config.name,
                     prompt_text=parsed["prompt_text"],
                     rationale=parsed["rationale"]
-                ))
+                )
             except Exception as e:
                 self.logger.error(f"Fehler bei Optimizer {model_config.name}: {e}")
+                return None
 
-        return candidates
+        results = await asyncio.gather(*(generate_for_model(m) for m in self.models))
+        return [r for r in results if r is not None]

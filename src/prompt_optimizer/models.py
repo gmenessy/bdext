@@ -72,6 +72,7 @@ class PromptCandidate(BaseModel):
     optimizer_name: str
     prompt_text: str
     rationale: str
+    parent_id: str | None = None
 
 
 class CandidateEvaluation(BaseModel):

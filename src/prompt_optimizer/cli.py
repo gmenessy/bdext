@@ -44,6 +44,8 @@ def validate_cmd(config: str = typer.Option(..., help="Pfad zur YAML-Konfigurati
         sys.exit(1)
 
 
+import asyncio
+
 @app.command("run")
 def run_cmd(
     config: str = typer.Option(..., help="Pfad zur YAML-Konfiguration"),
@@ -76,13 +78,17 @@ def run_cmd(
         acceptance_logic=acceptance_logic
     )
 
-    all_results = []
-
-    try:
+    async def async_run():
+        await loop.init()
+        all_results = []
         for target_model in app_config.target_models:
             console.print(f"\n[bold blue]Starte Optimierung für Modell: {target_model.name}[/bold blue]")
-            result = loop.run_for_model(target_model, train_bundle, test_bundle)
+            result = await loop.run_for_model(target_model, train_bundle, test_bundle)
             all_results.append(result)
+        return all_results
+
+    try:
+        all_results = asyncio.run(async_run())
 
         reporter = Reporter(app_config)
         reporter.write_artifacts(all_results)

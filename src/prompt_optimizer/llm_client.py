@@ -11,7 +11,7 @@ from prompt_optimizer.config import ApiConfig
 
 class LLMClient(ABC):
     @abstractmethod
-    def complete(
+    async def complete(
         self,
         model_config: ModelConfig,
         messages: List[Dict[str, str]],
@@ -23,9 +23,9 @@ class LLMClient(ABC):
 class OpenAILikeClient(LLMClient):
     def __init__(self, api_config: ApiConfig):
         self.api_config = api_config
-        self.client = httpx.Client(timeout=api_config.timeout_seconds)
+        self.client = httpx.AsyncClient(timeout=api_config.timeout_seconds)
 
-    def complete(
+    async def complete(
         self,
         model_config: ModelConfig,
         messages: List[Dict[str, str]],
@@ -38,7 +38,7 @@ class OpenAILikeClient(LLMClient):
             retry=retry_if_exception_type((httpx.RequestError, httpx.HTTPStatusError)),
             reraise=True
         )
-        def _call_api():
+        async def _call_api():
             headers = {
                 "Authorization": f"Bearer {model_config.api_key}",
                 "Content-Type": "application/json"
@@ -50,7 +50,7 @@ class OpenAILikeClient(LLMClient):
                 "temperature": temperature,
             }
 
-            response = self.client.post(
+            response = await self.client.post(
                 f"{model_config.base_url.rstrip('/')}/chat/completions",
                 headers=headers,
                 json=payload
@@ -59,7 +59,7 @@ class OpenAILikeClient(LLMClient):
             data = response.json()
             return data["choices"][0]["message"]["content"]
 
-        return _call_api()
+        return await _call_api()
 
 
 class MockLLMClient(LLMClient):
@@ -67,7 +67,7 @@ class MockLLMClient(LLMClient):
     MockClient für deterministische Tests ohne externe API.
     Reagiert auf bestimmte Prompt-Inhalte.
     """
-    def complete(
+    async def complete(
         self,
         model_config: ModelConfig,
         messages: List[Dict[str, str]],

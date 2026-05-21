@@ -5,12 +5,20 @@ from pydantic import BaseModel, Field
 from prompt_optimizer.models import ModelConfig
 
 
+from enum import Enum
+
+class OptimizationMode(str, Enum):
+    FAST = "fast"
+    HARD = "hard"
+
 class RunConfig(BaseModel):
     name: str
     random_seed: int
     output_dir: str
     max_iterations: int
     patience: int
+    mode: OptimizationMode = OptimizationMode.FAST
+    db_path: str = "reports/history.db"
 
 
 class DatasetConfig(BaseModel):

@@ -4,6 +4,8 @@ run:
   output_dir: "reports"
   max_iterations: 10
   patience: 2
+  mode: "hard"
+  db_path: "reports/history.db"
 
 dataset:
   path: "data/sample.csv"

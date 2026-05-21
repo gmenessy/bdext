@@ -1,14 +1,17 @@
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
+import asyncio
+from copy import deepcopy
 
 from prompt_optimizer.models import TaskBundle, ModelConfig, EvalResult, Phase, OptimizationStep, CandidateEvaluation
-from prompt_optimizer.config import AppConfig
+from prompt_optimizer.config import AppConfig, OptimizationMode
 from prompt_optimizer.target_runner import TargetRunner
 from prompt_optimizer.judge import JudgeCommittee
 from prompt_optimizer.optimizer import OptimizerCommittee
 from prompt_optimizer.acceptance import AcceptanceLogic
 from prompt_optimizer.prompt_state import PromptState
 from prompt_optimizer.scoring import mean_overall, mean_by_group, weakest_dimension
+from prompt_optimizer.wiki import WikiDatabase
 
 class OptimizationLoop:
     def __init__(
@@ -25,8 +28,12 @@ class OptimizationLoop:
         self.optimizer_committee = optimizer_committee
         self.acceptance_logic = acceptance_logic
         self.logger = logging.getLogger(__name__)
+        self.wiki = WikiDatabase(self.config.run.db_path)
 
-    def _evaluate_state(
+    async def init(self):
+        await self.wiki.init_db()
+
+    async def _evaluate_state(
         self,
         state: PromptState,
         bundle: TaskBundle,
@@ -34,37 +41,48 @@ class OptimizationLoop:
     ) -> List[EvalResult]:
 
         results = []
+        tasks = []
+
         for group in bundle.groups:
             user_prompt = state.user_prompts_by_group[group.group_id]
             for case in group.test_cases:
-                try:
-                    output = self.target_runner.run(
-                        model_config=target_model,
-                        system_prompt=state.system_prompt,
-                        user_prompt=user_prompt,
-                        test_case=case,
-                        temperature=self.config.temperatures.target
-                    )
+                tasks.append(self._eval_case(state.system_prompt, user_prompt, case, target_model))
 
-                    committee_result = self.judge_committee.evaluate(
-                        target_output=output,
-                        test_case=case,
-                        temperature=self.config.temperatures.judge
-                    )
-
-                    results.append(EvalResult(
-                        target_model_name=target_model.name,
-                        group_id=group.group_id,
-                        case_id=case.case_id,
-                        output=output.output,
-                        committee=committee_result
-                    ))
-                except Exception as e:
-                    self.logger.error(f"Fehler bei Evaluierung {case.case_id}: {e}")
+        eval_results = await asyncio.gather(*tasks)
+        for r in eval_results:
+            if r is not None:
+                results.append(r)
 
         return results
 
-    def _optimize_phase(
+    async def _eval_case(self, sys_prompt, user_prompt, case, target_model) -> Optional[EvalResult]:
+        try:
+            output = await self.target_runner.run(
+                model_config=target_model,
+                system_prompt=sys_prompt,
+                user_prompt=user_prompt,
+                test_case=case,
+                temperature=self.config.temperatures.target
+            )
+
+            committee_result = await self.judge_committee.evaluate(
+                target_output=output,
+                test_case=case,
+                temperature=self.config.temperatures.judge
+            )
+
+            return EvalResult(
+                target_model_name=target_model.name,
+                group_id=case.group_id,
+                case_id=case.case_id,
+                output=output.output,
+                committee=committee_result
+            )
+        except Exception as e:
+            self.logger.error(f"Fehler bei Evaluierung {case.case_id}: {e}")
+            return None
+
+    async def _optimize_phase(
         self,
         phase: Phase,
         iteration: int,
@@ -84,26 +102,28 @@ class OptimizationLoop:
         else:
             current_prompt = state.user_prompts_by_group[group_id]
 
-        candidates = self.optimizer_committee.generate_candidates(
+        wiki_insights_str = await self.wiki.get_top_insights(target_model.name)
+
+        candidates = await self.optimizer_committee.generate_candidates(
             phase=phase,
             current_prompt=current_prompt,
             weakest_dimension=weakest_dim,
             eval_results=baseline_results,
-            temperature=self.config.temperatures.optimizer
+            temperature=self.config.temperatures.optimizer,
+            wiki_insights_str=wiki_insights_str
         )
 
         evaluations: List[CandidateEvaluation] = []
         best_eval: Optional[CandidateEvaluation] = None
 
         for candidate in candidates:
-            # Test candidate
             test_state = state.model_copy(deep=True)
             if phase == Phase.SYSTEM:
                 test_state.system_prompt = candidate.prompt_text
             else:
                 test_state.user_prompts_by_group[group_id] = candidate.prompt_text
 
-            candidate_results = self._evaluate_state(test_state, bundle, target_model)
+            candidate_results = await self._evaluate_state(test_state, bundle, target_model)
             if not candidate_results:
                 continue
 
@@ -120,6 +140,7 @@ class OptimizationLoop:
 
             evaluations.append(evaluation)
 
+            # Pareto-like/strict selection based on delta and min requirements
             if evaluation.accepted:
                 if best_eval is None or evaluation.delta > best_eval.delta:
                     best_eval = evaluation
@@ -127,11 +148,12 @@ class OptimizationLoop:
         accepted_id = None
         if best_eval:
             accepted_id = best_eval.candidate.candidate_id
-            # Apply changes to state
-            if phase == Phase.SYSTEM:
-                state.system_prompt = best_eval.candidate.prompt_text
-            else:
-                state.user_prompts_by_group[group_id] = best_eval.candidate.prompt_text
+            await self.wiki.store_insight(
+                run_name=self.config.run.name,
+                candidate=best_eval.candidate,
+                delta=best_eval.delta,
+                target_model=target_model.name
+            )
 
         return OptimizationStep(
             iteration=iteration,
@@ -142,7 +164,7 @@ class OptimizationLoop:
             accepted_candidate_id=accepted_id
         )
 
-    def run_for_model(
+    async def run_for_model(
         self,
         target_model: ModelConfig,
         train_bundle: TaskBundle,
@@ -155,40 +177,54 @@ class OptimizationLoop:
             user_prompts_by_group={g.group_id: g.user_prompt for g in train_bundle.groups}
         )
 
-        baseline_train_results = self._evaluate_state(state, train_bundle, target_model)
+        baseline_train_results = await self._evaluate_state(state, train_bundle, target_model)
 
         patience_counter = 0
         max_iterations = min(self.config.run.max_iterations, 10)
 
         steps = []
 
+        # Beam search / Fallback state
+        fallback_queue = []
+
         for iteration in range(1, max_iterations + 1):
             self.logger.info(f"Iteration {iteration} für Modell {target_model.name}")
             any_improvement = False
             max_improvement_this_iter = 0.0
 
+            # Keep a copy of current state before optimizations
+            prev_state = state.model_copy(deep=True)
+
             # Phase A: System Prompt
-            step_a = self._optimize_phase(
+            step_a = await self._optimize_phase(
                 phase=Phase.SYSTEM,
                 iteration=iteration,
                 state=state,
                 bundle=train_bundle,
                 target_model=target_model,
-                baseline_results=self._evaluate_state(state, train_bundle, target_model)
+                baseline_results=await self._evaluate_state(state, train_bundle, target_model)
             )
             steps.append(step_a)
             if step_a.accepted_candidate_id:
                 any_improvement = True
                 best_cand = next(c for c in step_a.candidates if c.candidate.candidate_id == step_a.accepted_candidate_id)
                 max_improvement_this_iter = max(max_improvement_this_iter, best_cand.delta)
+                state.system_prompt = best_cand.candidate.prompt_text
+
+                # If hard mode, push other accepted candidates to fallback
+                if self.config.run.mode == OptimizationMode.HARD:
+                    for c in step_a.candidates:
+                        if c.accepted and c.candidate.candidate_id != step_a.accepted_candidate_id:
+                            fb_state = prev_state.model_copy(deep=True)
+                            fb_state.system_prompt = c.candidate.prompt_text
+                            fallback_queue.append((fb_state, c.delta))
 
             # Phase B: User Prompts per Group
             for group in train_bundle.groups:
-                # Evaluate specifically for this group to focus optimizer
-                current_results = self._evaluate_state(state, train_bundle, target_model)
+                current_results = await self._evaluate_state(state, train_bundle, target_model)
                 group_results = [r for r in current_results if r.group_id == group.group_id]
 
-                step_b = self._optimize_phase(
+                step_b = await self._optimize_phase(
                     phase=Phase.USER,
                     iteration=iteration,
                     state=state,
@@ -201,24 +237,34 @@ class OptimizationLoop:
                 if step_b.accepted_candidate_id:
                     any_improvement = True
                     best_cand = next(c for c in step_b.candidates if c.candidate.candidate_id == step_b.accepted_candidate_id)
-                    # For relative improvement check, we might want to scale group delta but using absolute delta for now
                     max_improvement_this_iter = max(max_improvement_this_iter, best_cand.delta)
+                    state.user_prompts_by_group[group.group_id] = best_cand.candidate.prompt_text
 
-            # Early stopping check: patience and 5% improvement rule
-            # Rule: if after 2 iterations no > 5% improvement occurs, stop.
-            # Delta is absolute (1-10 scale), 5% improvement is roughly > 0.5 points
-            # For simplicity, we interpret "5% Änderung" relative to mean_score, or hardcoded min_delta if larger
+                    if self.config.run.mode == OptimizationMode.HARD:
+                        for c in step_b.candidates:
+                            if c.accepted and c.candidate.candidate_id != step_b.accepted_candidate_id:
+                                fb_state = prev_state.model_copy(deep=True)
+                                fb_state.user_prompts_by_group[group.group_id] = c.candidate.prompt_text
+                                fallback_queue.append((fb_state, c.delta))
+
             if not any_improvement or max_improvement_this_iter < 0.5:
                 patience_counter += 1
             else:
                 patience_counter = 0
 
             if patience_counter >= self.config.run.patience:
-                self.logger.info(f"Early stopping nach Iteration {iteration} ausgelöst (patience={self.config.run.patience}).")
-                break
+                if self.config.run.mode == OptimizationMode.HARD and fallback_queue:
+                    # Sort by delta desc
+                    fallback_queue.sort(key=lambda x: x[1], reverse=True)
+                    next_state, _ = fallback_queue.pop(0)
+                    self.logger.info(f"Patience erschöpft. Wechsel auf Fallback-Kandidat (Sackgasse umgangen).")
+                    state = next_state
+                    patience_counter = 0
+                else:
+                    self.logger.info(f"Early stopping nach Iteration {iteration} ausgelöst.")
+                    break
 
-        # Final Test Evaluation
-        test_results = self._evaluate_state(state, test_bundle, target_model)
+        test_results = await self._evaluate_state(state, test_bundle, target_model)
 
         return {
             "target_model_name": target_model.name,
