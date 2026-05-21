@@ -21,41 +21,61 @@ class WikiDatabase:
                     prompt_text TEXT,
                     rationale TEXT,
                     delta REAL,
+                    is_anti_pattern BOOLEAN,
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
             await db.commit()
 
-    async def store_insight(self, run_name: str, candidate: PromptCandidate, delta: float, target_model: str):
+    async def store_insight(self, run_name: str, candidate: PromptCandidate, delta: float, target_model: str, is_anti_pattern: bool = False):
         try:
             async with aiosqlite.connect(self.db_path) as db:
                 await db.execute("""
-                    INSERT INTO wiki_insights (run_name, phase, model_name, prompt_text, rationale, delta)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (run_name, candidate.phase.value, target_model, candidate.prompt_text, candidate.rationale, delta))
+                    INSERT INTO wiki_insights (run_name, phase, model_name, prompt_text, rationale, delta, is_anti_pattern)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (run_name, candidate.phase.value, target_model, candidate.prompt_text, candidate.rationale, delta, is_anti_pattern))
                 await db.commit()
         except Exception as e:
             self.logger.error(f"Fehler beim Speichern in Wiki DB: {e}")
 
-    async def get_top_insights(self, target_model: str, limit: int = 3) -> str:
+    async def get_top_insights(self, target_model: str, pos_limit: int = 3, neg_limit: int = 2) -> str:
         try:
             async with aiosqlite.connect(self.db_path) as db:
                 db.row_factory = aiosqlite.Row
+
+                # Fetch positive insights
                 async with db.execute("""
                     SELECT phase, rationale, delta
                     FROM wiki_insights
-                    WHERE model_name = ?
+                    WHERE model_name = ? AND is_anti_pattern = FALSE
                     ORDER BY delta DESC
                     LIMIT ?
-                """, (target_model, limit)) as cursor:
-                    rows = await cursor.fetchall()
+                """, (target_model, pos_limit)) as cursor:
+                    pos_rows = await cursor.fetchall()
 
-            if not rows:
+                # Fetch negative insights (anti-patterns)
+                async with db.execute("""
+                    SELECT phase, rationale, delta
+                    FROM wiki_insights
+                    WHERE model_name = ? AND is_anti_pattern = TRUE
+                    ORDER BY delta ASC
+                    LIMIT ?
+                """, (target_model, neg_limit)) as cursor:
+                    neg_rows = await cursor.fetchall()
+
+            if not pos_rows and not neg_rows:
                 return "Bisher keine historischen Erkenntnisse (WIKI leer)."
 
-            insights = ["Historische WIKI-Erkenntnisse (Was hat zuvor gut funktioniert):"]
-            for row in rows:
-                insights.append(f"- Phase: {row['phase']}, Delta: +{row['delta']:.2f}, Begründung: {row['rationale']}")
+            insights = []
+            if pos_rows:
+                insights.append("Historische WIKI-Erkenntnisse (Was hat zuvor GUT funktioniert):")
+                for row in pos_rows:
+                    insights.append(f"- Phase: {row['phase']}, Delta: +{row['delta']:.2f}, Erfolgsgrund: {row['rationale']}")
+
+            if neg_rows:
+                insights.append("\nHistorische ANTI-PATTERNS (Was in Sackgassen führte - bitte VERMEIDEN):")
+                for row in neg_rows:
+                    insights.append(f"- Phase: {row['phase']}, Delta: {row['delta']:.2f}, Fehlergrund: {row['rationale']}")
 
             return "\n".join(insights)
         except Exception as e:

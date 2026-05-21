@@ -49,11 +49,19 @@ class DatasetLoader:
                 if pd.isna(row["expected_output"]) or str(row["expected_output"]).strip() == "":
                     raise ValueError(f"Leerer expected_output bei case_id: {row['case_id']}")
 
+                golden = None
+                if "golden_score" in row and pd.notna(row["golden_score"]):
+                    try:
+                        golden = float(row["golden_score"])
+                    except ValueError:
+                        pass
+
                 cases.append(TestCase(
                     case_id=str(row["case_id"]),
                     group_id=str(row["group_id"]),
                     input=str(row["input"]),
-                    expected_output=str(row["expected_output"])
+                    expected_output=str(row["expected_output"]),
+                    golden_score=golden
                 ))
 
             user_prompt = group_df["prompt"].iloc[0]

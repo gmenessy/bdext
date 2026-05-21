@@ -19,6 +19,7 @@ class TestCase(BaseModel):
     group_id: str
     input: str
     expected_output: str
+    golden_score: float | None = None
 
 
 class PromptGroup(BaseModel):

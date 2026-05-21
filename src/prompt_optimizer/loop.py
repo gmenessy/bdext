@@ -12,6 +12,7 @@ from prompt_optimizer.acceptance import AcceptanceLogic
 from prompt_optimizer.prompt_state import PromptState
 from prompt_optimizer.scoring import mean_overall, mean_by_group, weakest_dimension
 from prompt_optimizer.wiki import WikiDatabase
+from prompt_optimizer.calibration import Calibrator
 
 class OptimizationLoop:
     def __init__(
@@ -20,13 +21,15 @@ class OptimizationLoop:
         target_runner: TargetRunner,
         judge_committee: JudgeCommittee,
         optimizer_committee: OptimizerCommittee,
-        acceptance_logic: AcceptanceLogic
+        acceptance_logic: AcceptanceLogic,
+        calibrator: Calibrator
     ):
         self.config = config
         self.target_runner = target_runner
         self.judge_committee = judge_committee
         self.optimizer_committee = optimizer_committee
         self.acceptance_logic = acceptance_logic
+        self.calibrator = calibrator
         self.logger = logging.getLogger(__name__)
         self.wiki = WikiDatabase(self.config.run.db_path)
 
@@ -37,21 +40,40 @@ class OptimizationLoop:
         self,
         state: PromptState,
         bundle: TaskBundle,
-        target_model: ModelConfig
+        target_model: ModelConfig,
+        baseline_mean: Optional[float] = None
     ) -> List[EvalResult]:
 
         results = []
-        tasks = []
 
+        # Flatten all cases across all groups for chunking
+        all_cases = []
         for group in bundle.groups:
             user_prompt = state.user_prompts_by_group[group.group_id]
             for case in group.test_cases:
-                tasks.append(self._eval_case(state.system_prompt, user_prompt, case, target_model))
+                all_cases.append((state.system_prompt, user_prompt, case, target_model))
 
-        eval_results = await asyncio.gather(*tasks)
-        for r in eval_results:
-            if r is not None:
-                results.append(r)
+        chunk_size = self.config.optimization.early_exit_chunk_size
+
+        # Split into chunks
+        for i in range(0, len(all_cases), chunk_size):
+            chunk = all_cases[i:i + chunk_size]
+            tasks = [self._eval_case(*args) for args in chunk]
+            chunk_results = await asyncio.gather(*tasks)
+
+            valid_chunk_results = [r for r in chunk_results if r is not None]
+            results.extend(valid_chunk_results)
+
+            # Check early exit if we have a baseline to compare against
+            if baseline_mean is not None and len(results) >= chunk_size:
+                current_mean = mean_overall(results)
+                # If the score is catastrophically worse than baseline, abort early
+                if (current_mean - baseline_mean) < self.config.optimization.early_exit_threshold:
+                    self.logger.warning(
+                        f"Early Exit getriggert: Aktueller Chunk-Mean ({current_mean:.2f}) "
+                        f"ist zu weit unter Baseline ({baseline_mean:.2f}). Evaluierung abgebrochen."
+                    )
+                    break # Abort remaining chunks, return poor results so it gets rejected
 
         return results
 
@@ -90,7 +112,8 @@ class OptimizationLoop:
         bundle: TaskBundle,
         target_model: ModelConfig,
         baseline_results: List[EvalResult],
-        group_id: Optional[str] = None
+        group_id: Optional[str] = None,
+        optimizer_strategy: str = ""
     ) -> OptimizationStep:
 
         baseline_mean = mean_overall(baseline_results)
@@ -104,13 +127,15 @@ class OptimizationLoop:
 
         wiki_insights_str = await self.wiki.get_top_insights(target_model.name)
 
+        full_insights = wiki_insights_str + "\n" + optimizer_strategy
+
         candidates = await self.optimizer_committee.generate_candidates(
             phase=phase,
             current_prompt=current_prompt,
             weakest_dimension=weakest_dim,
             eval_results=baseline_results,
             temperature=self.config.temperatures.optimizer,
-            wiki_insights_str=wiki_insights_str
+            wiki_insights_str=full_insights
         )
 
         evaluations: List[CandidateEvaluation] = []
@@ -123,7 +148,7 @@ class OptimizationLoop:
             else:
                 test_state.user_prompts_by_group[group_id] = candidate.prompt_text
 
-            candidate_results = await self._evaluate_state(test_state, bundle, target_model)
+            candidate_results = await self._evaluate_state(test_state, bundle, target_model, baseline_mean=baseline_mean)
             if not candidate_results:
                 continue
 
@@ -177,7 +202,27 @@ class OptimizationLoop:
             user_prompts_by_group={g.group_id: g.user_prompt for g in train_bundle.groups}
         )
 
+        # Phase 0.a: Judge Calibration
+        judge_guideline = ""
+        if self.config.optimization.calibrate_judges:
+            judge_guideline = await self.calibrator.calibrate_judges(
+                train_bundle, target_model, state.system_prompt, state.user_prompts_by_group
+            )
+            # Im echten MVP müssten wir diese Guideline global an den Judge_Prompt hängen.
+            # Da die Architektur aktuell statische Prompts in `judge.py` nutzt, übergeben
+            # wir es hier via State/Mock-Implementierung oder lassen die Architektur es für
+            # zukünftige Judge-Runs injizieren. Für MVP-Kompatibilität wird es hier geloggt.
+            if judge_guideline:
+                self.logger.info("Judge Guideline ist aktiv.")
+
         baseline_train_results = await self._evaluate_state(state, train_bundle, target_model)
+
+        # Phase 0.b: Optimizer Calibration
+        optimizer_strategy = ""
+        if self.config.optimization.calibrate_optimizers and self.config.optimizer_models:
+            optimizer_strategy = await self.calibrator.calibrate_optimizer(
+                train_bundle, target_model, baseline_train_results, self.config.optimizer_models[0]
+            )
 
         patience_counter = 0
         max_iterations = min(self.config.run.max_iterations, 10)
@@ -202,7 +247,8 @@ class OptimizationLoop:
                 state=state,
                 bundle=train_bundle,
                 target_model=target_model,
-                baseline_results=await self._evaluate_state(state, train_bundle, target_model)
+                baseline_results=await self._evaluate_state(state, train_bundle, target_model),
+                optimizer_strategy=optimizer_strategy
             )
             steps.append(step_a)
             if step_a.accepted_candidate_id:
@@ -231,7 +277,8 @@ class OptimizationLoop:
                     bundle=train_bundle,
                     target_model=target_model,
                     baseline_results=group_results,
-                    group_id=group.group_id
+                    group_id=group.group_id,
+                    optimizer_strategy=optimizer_strategy
                 )
                 steps.append(step_b)
                 if step_b.accepted_candidate_id:

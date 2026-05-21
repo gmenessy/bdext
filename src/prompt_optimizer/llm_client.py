@@ -20,10 +20,13 @@ class LLMClient(ABC):
         pass
 
 
+import asyncio
+
 class OpenAILikeClient(LLMClient):
     def __init__(self, api_config: ApiConfig):
         self.api_config = api_config
         self.client = httpx.AsyncClient(timeout=api_config.timeout_seconds)
+        self.semaphore = asyncio.Semaphore(api_config.concurrency_limit)
 
     async def complete(
         self,
@@ -39,25 +42,26 @@ class OpenAILikeClient(LLMClient):
             reraise=True
         )
         async def _call_api():
-            headers = {
-                "Authorization": f"Bearer {model_config.api_key}",
-                "Content-Type": "application/json"
-            }
+            async with self.semaphore:
+                headers = {
+                    "Authorization": f"Bearer {model_config.api_key}",
+                    "Content-Type": "application/json"
+                }
 
-            payload = {
-                "model": model_config.model,
-                "messages": messages,
-                "temperature": temperature,
-            }
+                payload = {
+                    "model": model_config.model,
+                    "messages": messages,
+                    "temperature": temperature,
+                }
 
-            response = await self.client.post(
-                f"{model_config.base_url.rstrip('/')}/chat/completions",
-                headers=headers,
-                json=payload
-            )
-            response.raise_for_status()
-            data = response.json()
-            return data["choices"][0]["message"]["content"]
+                response = await self.client.post(
+                    f"{model_config.base_url.rstrip('/')}/chat/completions",
+                    headers=headers,
+                    json=payload
+                )
+                response.raise_for_status()
+                data = response.json()
+                return data["choices"][0]["message"]["content"]
 
         return await _call_api()
 

@@ -70,12 +70,16 @@ def run_cmd(
     optimizer_committee = OptimizerCommittee(client, app_config.optimizer_models)
     acceptance_logic = AcceptanceLogic(app_config.optimization)
 
+    from prompt_optimizer.calibration import Calibrator
+    calibrator = Calibrator(app_config, target_runner, judge_committee, client)
+
     loop = OptimizationLoop(
         config=app_config,
         target_runner=target_runner,
         judge_committee=judge_committee,
         optimizer_committee=optimizer_committee,
-        acceptance_logic=acceptance_logic
+        acceptance_logic=acceptance_logic,
+        calibrator=calibrator
     )
 
     async def async_run():

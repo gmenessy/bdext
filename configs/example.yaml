@@ -16,6 +16,10 @@ optimization:
   min_delta: 0.05
   max_group_regression: 0.5
   disagreement_std_threshold: 1.5
+  early_exit_chunk_size: 5
+  early_exit_threshold: -1.5
+  calibrate_judges: true
+  calibrate_optimizers: true
 
 temperatures:
   target: 0.0
@@ -27,6 +31,7 @@ api:
   retry_attempts: 3
   retry_initial_seconds: 1
   retry_max_seconds: 20
+  concurrency_limit: 10
 
 cache:
   enabled: true

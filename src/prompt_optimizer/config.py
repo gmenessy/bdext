@@ -31,6 +31,10 @@ class OptimizationConfig(BaseModel):
     min_delta: float
     max_group_regression: float
     disagreement_std_threshold: float
+    early_exit_chunk_size: int = 5
+    early_exit_threshold: float = -1.5
+    calibrate_judges: bool = True
+    calibrate_optimizers: bool = True
 
 
 class TemperaturesConfig(BaseModel):
@@ -44,6 +48,7 @@ class ApiConfig(BaseModel):
     retry_attempts: int
     retry_initial_seconds: int
     retry_max_seconds: int
+    concurrency_limit: int = 10
 
 
 class CacheConfig(BaseModel):

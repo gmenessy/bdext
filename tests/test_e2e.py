@@ -41,12 +41,16 @@ async def test_e2e_optimization_loop():
     optimizer_committee = OptimizerCommittee(client, app_config.optimizer_models)
     acceptance_logic = AcceptanceLogic(app_config.optimization)
 
+    from prompt_optimizer.calibration import Calibrator
+    calibrator = Calibrator(app_config, target_runner, judge_committee, client)
+
     loop = OptimizationLoop(
         config=app_config,
         target_runner=target_runner,
         judge_committee=judge_committee,
         optimizer_committee=optimizer_committee,
-        acceptance_logic=acceptance_logic
+        acceptance_logic=acceptance_logic,
+        calibrator=calibrator
     )
 
     await loop.init()
