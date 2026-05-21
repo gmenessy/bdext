@@ -1,1 +1,30 @@
-# bdext
+# Prompt Optimizer
+
+Ein MVP für eine LLM-Prompt-Optimierungspipeline mit Auto-Research, Optimizer-Komitee und LLM-as-a-Judge-Komitee.
+
+## Installation
+
+```bash
+pip install -e .[dev]
+```
+
+## Nutzung
+
+Konfiguration vorbereiten:
+```bash
+cp .env.example .env
+```
+Passe in der `.env` Datei die Keys und URLs zu deinen LLM-Providern an (z.B. Ollama, vLLM, LiteLLM, OpenAI).
+
+Datensatz validieren:
+```bash
+prompt-optimizer validate --config configs/example.yaml
+```
+
+Optimierungslauf starten:
+```bash
+prompt-optimizer run --config configs/example.yaml
+```
+
+## Übersicht
+Die Pipeline verbessert iterativ System- und User-Prompts auf Basis eines bereitgestellten Datensatzes. Ein Optimizer-Modell schlägt Änderungen vor, die von einem Judge-Komitee bewertet werden. Akzeptierte Änderungen werden in einem detaillierten Markdown-Report gespeichert.

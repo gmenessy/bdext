@@ -1,0 +1,56 @@
+run:
+  name: "local_prompt_optimization"
+  random_seed: 42
+  output_dir: "reports"
+  max_iterations: 10
+  patience: 2
+  mode: "hard"
+  db_path: "reports/history.db"
+
+dataset:
+  path: "data/sample.csv"
+  train_test_split: 0.7
+
+optimization:
+  objective: "mean_score"
+  min_delta: 0.05
+  max_group_regression: 0.5
+  disagreement_std_threshold: 1.5
+  early_exit_chunk_size: 5
+  early_exit_threshold: -1.5
+  calibrate_judges: true
+  calibrate_optimizers: true
+
+temperatures:
+  target: 0.0
+  judge: 0.0
+  optimizer: 0.5
+
+api:
+  timeout_seconds: 90
+  retry_attempts: 3
+  retry_initial_seconds: 1
+  retry_max_seconds: 20
+  concurrency_limit: 10
+
+cache:
+  enabled: true
+  path: ".cache/prompt_optimizer"
+
+target_models:
+  - name: "target_model_1"
+    base_url: "${TARGET_1_BASE_URL}"
+    api_key: "${TARGET_1_API_KEY}"
+    model: "${TARGET_1_MODEL}"
+
+judge_models:
+  - name: "judge_1"
+    base_url: "${JUDGE_1_BASE_URL}"
+    api_key: "${JUDGE_1_API_KEY}"
+    model: "${JUDGE_1_MODEL}"
+
+optimizer_models:
+  - name: "optimizer_1"
+    base_url: "${OPT_1_BASE_URL}"
+    api_key: "${OPT_1_API_KEY}"
+    model: "${OPT_1_MODEL}"
