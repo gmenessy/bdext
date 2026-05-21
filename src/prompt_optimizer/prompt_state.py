@@ -7,3 +7,6 @@ class PromptState(BaseModel):
     user_prompts_by_group: dict[str, str]
     # Ensembling: We can optionally store top N alternative system prompts
     ensemble_system_prompts: List[str] = []
+
+    # "One more thing" In-Context Prompt Routing
+    specialized_prompts: dict[str, str] = {}

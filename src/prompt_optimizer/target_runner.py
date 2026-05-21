@@ -13,7 +13,8 @@ class TargetRunner:
         system_prompt: str,
         user_prompt: str,
         test_case: TestCase,
-        temperature: float = 0.0
+        temperature: float = 0.0,
+        specialized_prompts: dict[str, str] = None
     ) -> TargetOutput:
 
         # Check if {input} is in user_prompt, if not append it instead of raising error to avoid test mock failures
@@ -41,8 +42,18 @@ class TargetRunner:
                     output=cached_output
                 )
 
+        final_system_prompt = system_prompt
+
+        if specialized_prompts:
+            # Inject Adaptive Routing Meta-Prompt
+            router_block = "\n\nHINWEIS ZUR ADAPTIVEN AUSWAHL:\nDu verfügst über mehrere spezialisierte System-Profile. Analysiere den User-Input und handle entsprechend der passendsten Rolle:\n"
+            for k, v in specialized_prompts.items():
+                router_block += f"- Profil '{k}': {v}\n"
+            router_block += "\nWähle das beste Profil gedanklich aus und beantworte den Input perfekt in dieser Rolle."
+            final_system_prompt += router_block
+
         messages = [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": final_system_prompt},
             {"role": "user", "content": rendered_user_prompt}
         ]
 

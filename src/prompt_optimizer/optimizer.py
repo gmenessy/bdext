@@ -27,11 +27,16 @@ Regeln:
 - Vermeide Überanpassung auf einzelne Beispiele.
 - Verschlechtere keine andere Bewertungsdimension.
 - MAGIC FAST PATH (Test-Time Compute): Wenn du das Gefühl hast, das Zielmodell hat Probleme mit der Komplexität, injiziere Chain-of-Thought (CoT) direkt in den neuen Prompt. Weise das Zielmodell an, seine Gedanken in `<scratchpad>` XML-Tags zu strukturieren, bevor es die finale Antwort gibt.
+- ONE MORE THING (In-Context Routing): Wenn du merkst, dass die Testfälle extrem unterschiedliche Intentionen haben (z.B. faktisch vs. kreativ), kannst du im JSON optional das Feld `specialized_prompts` füllen. Gib dort 2-3 Kategorienamen als Schlüssel und den jeweiligen spezialisierten System-Prompt als Wert an.
 
 Gib ausschließlich valides JSON zurück:
 {{
-  "prompt_text": "...",
-  "rationale": "..."
+  "prompt_text": "Der generelle Standard-Prompt...",
+  "rationale": "...",
+  "specialized_prompts": {{
+    "analytical": "Sei streng analytisch...",
+    "creative": "Sei kreativ..."
+  }}
 }}"""
 
 
@@ -109,13 +114,20 @@ class OptimizerCommittee:
 
                 parsed = self._parse_output(raw_output)
 
-                return PromptCandidate(
+                candidate = PromptCandidate(
                     candidate_id=f"{model_config.name}_{phase.value}_{hash(raw_output)}",
                     phase=phase,
                     optimizer_name=model_config.name,
                     prompt_text=parsed["prompt_text"],
                     rationale=parsed["rationale"]
                 )
+
+                if "specialized_prompts" in parsed and isinstance(parsed["specialized_prompts"], dict):
+                    # We inject this into the rationale to pick it up later in the loop
+                    import json
+                    candidate.rationale += "\n[SPECIALIZED_PROMPTS]\n" + json.dumps(parsed["specialized_prompts"])
+
+                return candidate
             except Exception as e:
                 self.logger.error(f"Fehler bei Optimizer {model_config.name}: {e}")
                 return None

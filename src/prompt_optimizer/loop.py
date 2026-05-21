@@ -77,14 +77,15 @@ class OptimizationLoop:
 
         return results
 
-    async def _eval_case(self, sys_prompt, user_prompt, case, target_model) -> Optional[EvalResult]:
+    async def _eval_case(self, sys_prompt, user_prompt, case, target_model, specialized_prompts=None) -> Optional[EvalResult]:
         try:
             output = await self.target_runner.run(
                 model_config=target_model,
                 system_prompt=sys_prompt,
                 user_prompt=user_prompt,
                 test_case=case,
-                temperature=self.config.temperatures.target
+                temperature=self.config.temperatures.target,
+                specialized_prompts=specialized_prompts
             )
 
             committee_result = await self.judge_committee.evaluate(
@@ -173,6 +174,16 @@ class OptimizationLoop:
         accepted_id = None
         if best_eval:
             accepted_id = best_eval.candidate.candidate_id
+
+            import json
+            rationale_parts = best_eval.candidate.rationale.split("\n[SPECIALIZED_PROMPTS]\n")
+            if len(rationale_parts) > 1:
+                try:
+                    state.specialized_prompts = json.loads(rationale_parts[1])
+                    best_eval.candidate.rationale = rationale_parts[0]
+                except Exception as e:
+                    self.logger.error(f"Fehler beim Laden von Specialized Prompts: {e}")
+
             await self.wiki.store_insight(
                 run_name=self.config.run.name,
                 candidate=best_eval.candidate,
@@ -356,7 +367,7 @@ class OptimizationLoop:
         for group in bundle.groups:
             user_prompt = state.user_prompts_by_group[group.group_id]
             for case in group.test_cases:
-                all_cases.append((user_prompt, case))
+                all_cases.append((state.system_prompt, user_prompt, case, target_model, state.specialized_prompts))
 
         chunk_size = self.config.optimization.early_exit_chunk_size
 
@@ -364,11 +375,16 @@ class OptimizationLoop:
             chunk = all_cases[i:i + chunk_size]
 
             # For each case in chunk, test all prompts
-            for user_prompt, case in chunk:
+            for args in chunk:
+                user_prompt = args[1]
+                case = args[2]
+                target_model_arg = args[3]
+                specialized_prompts_arg = args[4]
+
                 best_result = None
 
                 # Test all prompts for this single case concurrently
-                tasks = [self._eval_case(p, user_prompt, case, target_model) for p in prompts_to_test]
+                tasks = [self._eval_case(p, user_prompt, case, target_model_arg, specialized_prompts_arg) for p in prompts_to_test]
                 case_results = await asyncio.gather(*tasks)
 
                 for r in case_results:
